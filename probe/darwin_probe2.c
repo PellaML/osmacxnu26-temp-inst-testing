@@ -35,7 +35,11 @@
 extern const void *_dyld_get_shared_cache_range(size_t *length);
 extern bool _dyld_get_shared_cache_uuid(uuid_t uuid);
 
+#if defined(__x86_64__)
+#define COMMPAGE_BASE 0x00007FFFFFE00000ULL
+#else
 #define COMMPAGE_BASE 0x0000000FFFFFC000ULL
+#endif
 
 // ---------------------------------------------------------------------------
 // 1. apple[]
@@ -130,8 +134,13 @@ static void dump_commpage_text(char **apple) {
     }
     printf("  kern.pfz = 0x%llx   [%zu bytes returned]\n", (unsigned long long)pfz, len);
     if (!pfz) { printf("  (zero: no PFZ mapped)\n"); return; }
-    printf("  commpage data base - pfz = 0x%llx\n",
-           (unsigned long long)(COMMPAGE_BASE - pfz));
+    if (COMMPAGE_BASE >= pfz) {
+        printf("  commpage data base - pfz = 0x%llx\n",
+               (unsigned long long)(COMMPAGE_BASE - pfz));
+    } else {
+        printf("  pfz - commpage data base = 0x%llx\n",
+               (unsigned long long)(pfz - COMMPAGE_BASE));
+    }
 
     mach_vm_address_t a = (mach_vm_address_t)pfz;
     mach_vm_size_t size = 0;
@@ -144,6 +153,15 @@ static void dump_commpage_text(char **apple) {
                prot_str(info.protection, cur), prot_str(info.max_protection, max), depth);
     }
 
+#if defined(__x86_64__)
+    const uint8_t *code = (const uint8_t *)(uintptr_t)pfz;
+    printf("  first 128 bytes:");
+    for (int i = 0; i < 128; i++) {
+        if ((i % 16) == 0) printf("\n    +%03x ", i);
+        printf("%02x ", code[i]);
+    }
+    printf("\n");
+#else
     const uint32_t *insn = (const uint32_t *)(uintptr_t)pfz;
     printf("  +0x0 (ATOMIC_ENQUEUE) = 0x%08x\n", insn[0]);
     printf("  +0x4 (ATOMIC_DEQUEUE) = 0x%08x\n", insn[1]);
@@ -157,6 +175,7 @@ static void dump_commpage_text(char **apple) {
     for (int i = 0; i < words; i++) if (insn[i] != filler) last = i;
     printf("  filler word = 0x%08x, last non-filler index %d => %d bytes of code\n",
            filler, last, (last + 1) * 4);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -210,16 +229,18 @@ static void probe_iokit(void) {
         if (!svc) { printf("  %-4s absent\n", bsd); continue; }
         io_registry_entry_t parent = IO_OBJECT_NULL;
         if (IORegistryEntryGetParentEntry(svc, kIOServicePlane, &parent) == KERN_SUCCESS) {
-            CFDataRef d = (CFDataRef)IORegistryEntryCreateCFProperty(parent, CFSTR("IOMACAddress"),
-                                                                     kCFAllocatorDefault, 0);
-            if (d) {
+            CFTypeRef value = IORegistryEntryCreateCFProperty(parent, CFSTR("IOMACAddress"),
+                                                               kCFAllocatorDefault, 0);
+            if (value && CFGetTypeID(value) == CFDataGetTypeID() &&
+                CFDataGetLength((CFDataRef)value) >= 6) {
+                CFDataRef d = (CFDataRef)value;
                 const UInt8 *b = CFDataGetBytePtr(d);
                 printf("  %-4s IOMACAddress = %02x:%02x:%02x:%02x:%02x:%02x  (len %ld)\n",
                        bsd, b[0], b[1], b[2], b[3], b[4], b[5], (long)CFDataGetLength(d));
-                CFRelease(d);
             } else {
-                printf("  %-4s present, no IOMACAddress property\n", bsd);
+                printf("  %-4s present, no six-byte IOMACAddress property\n", bsd);
             }
+            if (value) CFRelease(value);
             IOObjectRelease(parent);
         }
         IOObjectRelease(svc);

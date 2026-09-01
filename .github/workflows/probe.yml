@@ -1,76 +1,166 @@
-name: darwin-probe
-
-# Measures facts about the host macOS that our reimplementation has to match.
-# Reads only what any process can read on its own machine; ships and copies no
-# Apple code. Runs on the arm64 runners, which are free and unlimited on public
-# repositories.
+name: Darwin oracle probes
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    paths:
+      - "probe/**"
+      - ".github/workflows/probe.yml"
 
 permissions:
   contents: read
 
+concurrency:
+  group: darwin-oracle-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   probe:
+    name: ${{ matrix.os }} / ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-26, macos-15, macos-14]
-    runs-on: ${{ matrix.runner }}
-    name: probe (${{ matrix.runner }})
+        include:
+          - os: macos-14
+            arch: arm64
+          - os: macos-15
+            arch: arm64
+          - os: macos-26
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+          - os: macos-26-intel
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Environment
+      - name: Record runner and SDK
+        shell: bash
         run: |
-          echo "runner            : ${{ matrix.runner }}"
-          echo "uname -m          : $(uname -m)"
-          echo "uname -r          : $(uname -r)"
-          echo "sw_vers           :"; sw_vers
-          echo "clang             : $(clang --version | head -1)"
+          set -euo pipefail
+          mkdir -p build out
+          {
+            date -u +%Y-%m-%dT%H:%M:%SZ
+            uname -a
+            arch
+            sw_vers
+            sysctl -n hw.machine
+            sysctl -n hw.model
+            xcodebuild -version
+            xcrun --show-sdk-path
+            xcrun --show-sdk-version
+            xcrun clang --version
+          } | tee out/environment.txt
+          test "$(arch)" = "${{ matrix.arch }}"
 
-      - name: Build probe
+      - name: Build native probes
+        shell: bash
         run: |
-          clang -O0 -g -arch arm64 -o darwin_probe probe/darwin_probe.c
-          file darwin_probe
-          codesign -dv --verbose=2 darwin_probe 2>&1 | head -20 || true
+          set -euo pipefail
+          COMMON=(-O2 -g -Wall -Wextra -Wpedantic -Werror)
+          if [[ "${{ matrix.arch }}" == arm64 ]]; then
+            xcrun clang "${COMMON[@]}" probe/darwin_probe.c -o build/identity-probe
+          else
+            xcrun clang "${COMMON[@]}" probe/x86_probe.c -o build/identity-probe
+          fi
+          xcrun clang "${COMMON[@]}" probe/darwin_probe2.c \
+            -framework CoreFoundation -framework IOKit -o build/process-probe
+          xcrun clang "${COMMON[@]}" -Wno-deprecated-declarations -fobjc-arc \
+            probe/metal_probe.m -framework Foundation -framework Metal \
+            -framework IOSurface -framework IOKit -framework CoreFoundation \
+            -o build/metal-probe
+          xcrun clang "${COMMON[@]}" -Wno-deprecated-declarations \
+            probe/security_probe.c -framework Security -framework CoreFoundation \
+            -o build/security-probe
+          file build/* | tee out/binaries.txt
 
-      - name: Run probe
-        run: ./darwin_probe
-
-      - name: Build probe round 2
+      - name: Build and execute extension ABI consumers
+        shell: bash
         run: |
-          clang -O0 -g -arch arm64 -o darwin_probe2 probe/darwin_probe2.c \
-            -framework IOKit -framework CoreFoundation
-          file darwin_probe2
+          set -euo pipefail
+          COMMON=(-O2 -g -Wall -Wextra -Wpedantic -Werror)
+          xcrun clang "${COMMON[@]}" -std=c11 -fvisibility=hidden -dynamiclib \
+            probe/abi_provider.c -o build/libabi_provider.dylib
+          xcrun clang++ "${COMMON[@]}" -std=c++20 probe/abi_host.cpp \
+            -o build/abi-host
+          xcrun clang "${COMMON[@]}" -std=c11 probe/wire_builder.c \
+            -o build/wire-builder
+          build/abi-host "$PWD/build/libabi_provider.dylib" | tee out/native-abi.txt
+          (cd out && ../build/wire-builder) | tee out/wire-abi.txt
+          file build/libabi_provider.dylib build/abi-host build/wire-builder \
+            | tee -a out/binaries.txt
+          shasum -a 256 probe/granite_ext.h probe/granite_ext_wire.h \
+            out/wire-module.bin | tee out/abi-sha256.txt
 
-      - name: Run probe round 2
-        run: ./darwin_probe2
+      - name: Run behavior probes
+        id: behavior
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          failed=0
+          run_probe() {
+            local name="$1"; shift
+            set +e
+            "$@" >"out/$name.txt" 2>&1
+            local status=$?
+            set -e
+            printf '%s %d\n' "$name" "$status" | tee -a out/status.txt
+            if (( status != 0 )); then failed=1; fi
+          }
+          set -e
+          run_probe identity build/identity-probe
+          run_probe process build/process-probe
+          run_probe metal build/metal-probe
+          run_probe security build/security-probe
+          exit "$failed"
 
-      - name: Broad hw.* sysctl dump
-        run: sysctl -a 2>/dev/null | grep -E '^hw\.' | sort
-
-      - name: Broad hw.optional.* dump
-        run: sysctl -a 2>/dev/null | grep -E '^hw\.optional' | sort
-
-      - name: Full sysctl dump
-        run: sysctl -a 2>/dev/null | sort
-
-      - name: Save output
+      - name: Collect complete sysctl and focused system state
         if: always()
+        shell: bash
         run: |
-          mkdir -p out
-          ./darwin_probe  > "out/probe-${{ matrix.runner }}.txt"  2>&1 || true
-          ./darwin_probe2 > "out/probe2-${{ matrix.runner }}.txt" 2>&1 || true
-          sysctl -a 2>/dev/null | sort > "out/sysctl-all-${{ matrix.runner }}.txt"
-          sysctl -a 2>/dev/null | grep -E '^hw\.' | sort > "out/sysctl-hw-${{ matrix.runner }}.txt"
+          set +e
+          sysctl -a > out/sysctl-all.txt 2>&1
+          sysctl hw > out/sysctl-hw.txt 2>&1
+          system_profiler SPDisplaysDataType -json > out/displays.json 2>&1
+          {
+            for class in IOGPU AppleParavirtGPU AGXAccelerator IOAccelerator \
+              IOFramebuffer IOSurfaceRoot AppleSEPManager AppleCredentialManager; do
+              echo "===== $class ====="
+              ioreg -lw0 -r -c "$class"
+              echo "status=$?"
+            done
+          } > out/ioreg-focused.txt 2>&1
+          {
+            run() { echo; printf '$'; printf ' %q' "$@"; echo; "$@"; echo "status=$?"; }
+            run csrutil status
+            run spctl --status
+            run systemextensionsctl list
+            run profiles status -type enrollment
+            run fdesetup status
+            run DevToolsSecurity -status
+            run nvram boot-args
+            run codesign -dvvv --entitlements :- build/security-probe
+            run otool -l build/security-probe
+            run vm_stat
+          } > out/security-tools.txt 2>&1
+          exit 0
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload measurements
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: probe-${{ matrix.runner }}
+          name: darwin-${{ matrix.os }}-${{ matrix.arch }}-${{ github.run_id }}
           path: out/
+          if-no-files-found: error
           retention-days: 7
+
+      - name: Fail if a behavior probe crashed
+        if: always() && steps.behavior.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "At least one behavior probe failed; its output was uploaded." >&2
+          exit 1
