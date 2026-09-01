@@ -11,6 +11,7 @@
 #include <mach/mach_vm.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,9 +42,9 @@ static void print_sysctl(const char *name) {
     int result = sysctlbyname(name, value, &size, NULL, 0);
     printf("  %-40s result=%d errno=%d size=%zu", name, result, errno, size);
     if (result == 0) {
-        BOOL printable = size > 0 && value[size - 1] == 0;
+        bool printable = size > 0 && value[size - 1] == 0;
         for (size_t i = 0; printable && i + 1 < size; ++i) {
-            if (value[i] < 0x20 || value[i] > 0x7e) printable = NO;
+            if (value[i] < 0x20 || value[i] > 0x7e) printable = false;
         }
         if (printable) printf(" string=\"%s\"", value);
         else {
@@ -136,17 +137,17 @@ static void region_info(void *pointer) {
     if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
 }
 
-static BOOL put_return_42(void *memory) {
+static bool put_return_42(void *memory) {
 #if defined(__x86_64__)
     const uint8_t code[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xc3};
 #elif defined(__aarch64__)
     const uint32_t code[] = {0x52800540u, 0xd65f03c0u};
 #else
-    return NO;
+    return false;
 #endif
     memcpy(memory, code, sizeof(code));
     sys_icache_invalidate(memory, sizeof(code));
-    return YES;
+    return true;
 }
 
 static int call_generated(void *memory) {
@@ -157,7 +158,7 @@ static int call_generated(void *memory) {
 }
 
 static void probe_mapping(const char *name, int initial_protection, int flags,
-    BOOL toggle_jit) {
+    bool toggle_jit) {
     size_t page = (size_t)getpagesize();
     errno = 0;
     void *memory = mmap(NULL, page, initial_protection, flags, -1, 0);
@@ -166,7 +167,7 @@ static void probe_mapping(const char *name, int initial_protection, int flags,
     region_info(memory);
 
     if (toggle_jit) pthread_jit_write_protect_np(0);
-    BOOL wrote = put_return_42(memory);
+    bool wrote = put_return_42(memory);
     if (toggle_jit) pthread_jit_write_protect_np(1);
 
     int protect_result = 0;
@@ -187,11 +188,11 @@ static void probe_executable_memory(void) {
     int jit_supported = pthread_jit_write_protect_supported_np();
     printf("  pthread_jit_write_protect_supported_np=%d\n", jit_supported);
     probe_mapping("anonymous-rw-then-rx", PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANON, NO);
+        MAP_PRIVATE | MAP_AfalseN, false);
     probe_mapping("anonymous-rwx", PROT_READ | PROT_WRITE | PROT_EXEC,
-        MAP_PRIVATE | MAP_ANON, NO);
+        MAP_PRIVATE | MAP_AfalseN, false);
     probe_mapping("map-jit", PROT_READ | PROT_WRITE | PROT_EXEC,
-        MAP_PRIVATE | MAP_ANON | MAP_JIT, jit_supported != 0);
+        MAP_PRIVATE | MAP_AfalseN | MAP_JIT, jit_supported != 0);
 }
 
 static void probe_sandbox_and_sip(void) {
