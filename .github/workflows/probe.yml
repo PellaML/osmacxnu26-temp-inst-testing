@@ -1,0 +1,62 @@
+name: darwin-probe
+
+# Measures facts about the host macOS that our reimplementation has to match.
+# Reads only what any process can read on its own machine; ships and copies no
+# Apple code. Runs on the arm64 runners, which are free and unlimited on public
+# repositories.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-15, macos-14]
+    runs-on: ${{ matrix.runner }}
+    name: probe (${{ matrix.runner }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          echo "runner            : ${{ matrix.runner }}"
+          echo "uname -m          : $(uname -m)"
+          echo "uname -r          : $(uname -r)"
+          echo "sw_vers           :"; sw_vers
+          echo "clang             : $(clang --version | head -1)"
+
+      - name: Build probe
+        run: |
+          clang -O0 -g -arch arm64 -o darwin_probe probe/darwin_probe.c
+          file darwin_probe
+          codesign -dv --verbose=2 darwin_probe 2>&1 | head -20 || true
+
+      - name: Run probe
+        run: ./darwin_probe
+
+      - name: Broad hw.* sysctl dump
+        run: sysctl -a 2>/dev/null | grep -E '^hw\.' | sort
+
+      - name: Broad hw.optional.* dump
+        run: sysctl -a 2>/dev/null | grep -E '^hw\.optional' | sort
+
+      - name: Save output
+        if: always()
+        run: |
+          mkdir -p out
+          ./darwin_probe > "out/probe-${{ matrix.runner }}.txt" 2>&1 || true
+          sysctl -a 2>/dev/null | grep -E '^hw\.' | sort > "out/sysctl-hw-${{ matrix.runner }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ matrix.runner }}
+          path: out/
+          retention-days: 7
