@@ -1,5 +1,5 @@
 /*
- * granite_ext_wire.h — pointer-free little-endian module format, ABI 0.1.
+ * granite_ext_wire.h — pointer-free little-endian module format, ABI 0.2.
  *
  * This format is deliberately not a packed C struct. Records may start at any byte
  * alignment and every multibyte value is little-endian. Use these byte offsets and
@@ -23,11 +23,12 @@
 #endif
 
 #define GRANITE_WIRE_ABI_MAJOR 0u
-#define GRANITE_WIRE_ABI_MINOR 1u
+#define GRANITE_WIRE_ABI_MINOR 2u
 #define GRANITE_WIRE_ENDIAN_LITTLE 1u
-#define GRANITE_WIRE_HEADER_SIZE 64u
+#define GRANITE_WIRE_HEADER_SIZE 80u
 #define GRANITE_WIRE_PROVIDER_SIZE 64u
 #define GRANITE_WIRE_REGISTRATION_SIZE 80u
+#define GRANITE_WIRE_LINK_SIZE 64u
 #define GRANITE_WIRE_MAX_MODULE_BYTES 16777216u
 #define GRANITE_WIRE_MAX_RECORDS 65536u
 
@@ -53,7 +54,10 @@
 #define GRANITE_WIRE_H_SIGNATURE_LENGTH 48u
 #define GRANITE_WIRE_H_PROVIDER_STRIDE 52u
 #define GRANITE_WIRE_H_REGISTRATION_STRIDE 54u
-#define GRANITE_WIRE_H_RESERVED 56u
+#define GRANITE_WIRE_H_LINKS_OFFSET 56u
+#define GRANITE_WIRE_H_LINKS_COUNT 60u
+#define GRANITE_WIRE_H_LINK_STRIDE 64u
+#define GRANITE_WIRE_H_RESERVED 66u
 
 #define GRANITE_WIRE_P_RECORD_SIZE 0u
 #define GRANITE_WIRE_P_KIND 2u
@@ -86,6 +90,27 @@
 #define GRANITE_WIRE_R_REPLACEMENT_ID 52u
 #define GRANITE_WIRE_R_FLAGS 60u
 #define GRANITE_WIRE_R_RESERVED_TAIL 68u
+
+#define GRANITE_WIRE_L_RECORD_SIZE 0u
+#define GRANITE_WIRE_L_ROLE 2u
+#define GRANITE_WIRE_L_REQUIREMENT_KIND 3u
+#define GRANITE_WIRE_L_FAILURE_MODE 4u
+#define GRANITE_WIRE_L_MULTIPLICITY 5u
+#define GRANITE_WIRE_L_RESERVED_A 6u
+#define GRANITE_WIRE_L_FLAGS 8u
+#define GRANITE_WIRE_L_PROVIDER_INDEX 12u
+#define GRANITE_WIRE_L_INTERFACE 16u
+#define GRANITE_WIRE_L_INSTANCE 24u
+#define GRANITE_WIRE_L_FALLBACK 32u
+#define GRANITE_WIRE_L_ABI_MAJOR 40u
+#define GRANITE_WIRE_L_MIN_MINOR 42u
+#define GRANITE_WIRE_L_MAX_MINOR 44u
+#define GRANITE_WIRE_L_RESERVED_B 46u
+#define GRANITE_WIRE_L_RIGHTS 48u
+#define GRANITE_WIRE_L_RESERVED_TAIL 56u
+
+#define GRANITE_WIRE_LINK_PROVIDE 1u
+#define GRANITE_WIRE_LINK_REQUIRE 2u
 
 /* A caller-owned output buffer. `data` must designate `capacity` writable bytes. */
 typedef struct granite_wire_mut {
@@ -176,7 +201,9 @@ static inline bool granite_wire_init_header(granite_wire_mut out) {
         granite_wire_put_u16(out, GRANITE_WIRE_H_PROVIDER_STRIDE,
                GRANITE_WIRE_PROVIDER_SIZE) &&
         granite_wire_put_u16(out, GRANITE_WIRE_H_REGISTRATION_STRIDE,
-               GRANITE_WIRE_REGISTRATION_SIZE);
+               GRANITE_WIRE_REGISTRATION_SIZE) &&
+        granite_wire_put_u16(out, GRANITE_WIRE_H_LINK_STRIDE,
+               GRANITE_WIRE_LINK_SIZE);
 }
 static inline bool granite_wire_init_provider(granite_wire_mut out,
     uint32_t offset) {
@@ -193,6 +220,13 @@ static inline bool granite_wire_init_registration(granite_wire_mut out,
         return false;
     memset(record, 0, GRANITE_WIRE_REGISTRATION_SIZE);
     return granite_wire_put_u16(out, offset, GRANITE_WIRE_REGISTRATION_SIZE);
+}
+static inline bool granite_wire_init_link(granite_wire_mut out, uint32_t offset) {
+    uint8_t *record;
+    if (!granite_wire_span(out, offset, GRANITE_WIRE_LINK_SIZE, &record))
+        return false;
+    memset(record, 0, GRANITE_WIRE_LINK_SIZE);
+    return granite_wire_put_u16(out, offset, GRANITE_WIRE_LINK_SIZE);
 }
 
 /*
