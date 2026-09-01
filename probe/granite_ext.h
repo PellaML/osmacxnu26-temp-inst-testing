@@ -9,10 +9,16 @@
  *
  * This is Apache-2.0 and may be copied into proprietary modules. No private key or
  * DRM implementation belongs in the kernel tree; a licensed provider attaches here.
+ *
+ * Native code is a hostile boundary, not a memory-safety promise. The host validates
+ * and copies every span before use; a nonzero length requires a non-null pointer, and
+ * addresses still require platform-specific validation in the loader capsule. Neither
+ * a Rust panic nor a C++ exception may unwind through any function in this header.
  */
 #ifndef GRANITE_EXT_H
 #define GRANITE_EXT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -50,6 +56,16 @@ typedef struct granite_bytes_mut {
     uint32_t capacity;
     uint32_t written;
 } granite_bytes_mut;
+
+/* Structural checks only; they cannot prove that a foreign address is mapped. */
+static inline bool granite_bytes_valid(granite_bytes bytes) {
+    return bytes.reserved == 0 && (bytes.len == 0 || bytes.ptr != NULL);
+}
+
+static inline bool granite_bytes_mut_valid(const granite_bytes_mut *bytes) {
+    return bytes != NULL && bytes->written <= bytes->capacity &&
+        (bytes->capacity == 0 || bytes->ptr != NULL);
+}
 
 typedef granite_native_status (*granite_invoke_fn)(
     void *module_context,

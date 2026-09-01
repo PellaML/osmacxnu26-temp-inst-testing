@@ -6,7 +6,8 @@ static granite_native_status invoke(void *context, granite_bytes request,
     granite_bytes_mut *response) {
     static const uint8_t prefix[] = {'o', 'k', ':'};
     (void)context;
-    if (response == NULL || request.reserved != 0 || response->written != 0)
+    if (!granite_bytes_valid(request) || !granite_bytes_mut_valid(response) ||
+        response->written != 0)
         return GRANITE_EXT_MALFORMED;
     uint32_t needed = (uint32_t)sizeof(prefix) + request.len;
     if (response->capacity < needed || response->ptr == NULL)

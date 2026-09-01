@@ -188,11 +188,11 @@ static void probe_executable_memory(void) {
     int jit_supported = pthread_jit_write_protect_supported_np();
     printf("  pthread_jit_write_protect_supported_np=%d\n", jit_supported);
     probe_mapping("anonymous-rw-then-rx", PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_AfalseN, false);
+        MAP_PRIVATE | MAP_ANON, false);
     probe_mapping("anonymous-rwx", PROT_READ | PROT_WRITE | PROT_EXEC,
-        MAP_PRIVATE | MAP_AfalseN, false);
+        MAP_PRIVATE | MAP_ANON, false);
     probe_mapping("map-jit", PROT_READ | PROT_WRITE | PROT_EXEC,
-        MAP_PRIVATE | MAP_AfalseN | MAP_JIT, jit_supported != 0);
+        MAP_PRIVATE | MAP_ANON | MAP_JIT, jit_supported != 0);
 }
 
 static void probe_sandbox_and_sip(void) {

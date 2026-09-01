@@ -12,6 +12,17 @@ static uint32_t get_u32(const uint8_t *p) {
 }
 
 int main(void) {
+    uint8_t undersized[GRANITE_WIRE_HEADER_SIZE - 1];
+    memset(undersized, 0xa5, sizeof(undersized));
+    if (granite_wire_init_header(granite_wire_buffer(undersized,
+            sizeof(undersized))))
+        return 10;
+    for (size_t i = 0; i < sizeof(undersized); ++i)
+        if (undersized[i] != 0xa5) return 11;
+    if (granite_wire_put_u64(granite_wire_buffer(NULL, 0), UINT32_MAX,
+            UINT64_MAX))
+        return 12;
+
     static const uint8_t provider_id[] = "com.example.actions-probe";
     static const uint8_t provider_name[] = "Actions ABI Probe";
     enum { provider_offset = GRANITE_WIRE_HEADER_SIZE };
@@ -21,25 +32,34 @@ int main(void) {
     enum { total_size = data_offset + id_length + name_length };
     uint8_t module[total_size];
     memset(module, 0, sizeof(module));
+    granite_wire_mut out = granite_wire_buffer(module, sizeof(module));
 
-    granite_wire_init_header(module);
+    if (!granite_wire_init_header(out)) return 1;
     module[GRANITE_WIRE_H_FLAGS] = GRANITE_WIRE_FLAG_USERSPACE_ONLY;
-    granite_wire_put_u32(module + GRANITE_WIRE_H_TOTAL_SIZE, sizeof(module));
-    granite_wire_put_u32(module + GRANITE_WIRE_H_PROVIDERS_OFFSET, provider_offset);
-    granite_wire_put_u32(module + GRANITE_WIRE_H_PROVIDERS_COUNT, 1);
-    granite_wire_put_u32(module + GRANITE_WIRE_H_REGISTRATIONS_OFFSET, data_offset);
-    granite_wire_put_u32(module + GRANITE_WIRE_H_REGISTRATIONS_COUNT, 0);
-    granite_wire_put_ref(module + GRANITE_WIRE_H_DATA_OFFSET, data_offset,
-        id_length + name_length);
+    if (!granite_wire_put_u32(out, GRANITE_WIRE_H_TOTAL_SIZE,
+            (uint32_t)sizeof(module)) ||
+        !granite_wire_put_u32(out, GRANITE_WIRE_H_PROVIDERS_OFFSET,
+            provider_offset) ||
+        !granite_wire_put_u32(out, GRANITE_WIRE_H_PROVIDERS_COUNT, 1) ||
+        !granite_wire_put_u32(out, GRANITE_WIRE_H_REGISTRATIONS_OFFSET,
+            data_offset) ||
+        !granite_wire_put_u32(out, GRANITE_WIRE_H_REGISTRATIONS_COUNT, 0) ||
+        !granite_wire_put_ref(out, GRANITE_WIRE_H_DATA_OFFSET, data_offset,
+            id_length + name_length) ||
+        !granite_wire_init_provider(out, provider_offset) ||
+        !granite_wire_put_u16(out, provider_offset + GRANITE_WIRE_P_KIND, 13) ||
+        !granite_wire_put_ref(out, provider_offset + GRANITE_WIRE_P_ID,
+            data_offset, id_length) ||
+        !granite_wire_put_ref(out, provider_offset + GRANITE_WIRE_P_NAME,
+            data_offset + id_length, name_length))
+        return 1;
 
+    uint8_t *data = NULL;
+    if (!granite_wire_span(out, data_offset, id_length + name_length, &data))
+        return 1;
+    memcpy(data, provider_id, id_length);
+    memcpy(data + id_length, provider_name, name_length);
     uint8_t *provider = module + provider_offset;
-    granite_wire_init_provider(provider);
-    granite_wire_put_u16(provider + GRANITE_WIRE_P_KIND, 13); /* interceptor */
-    granite_wire_put_ref(provider + GRANITE_WIRE_P_ID, data_offset, id_length);
-    granite_wire_put_ref(provider + GRANITE_WIRE_P_NAME, data_offset + id_length,
-        name_length);
-    memcpy(module + data_offset, provider_id, id_length);
-    memcpy(module + data_offset + id_length, provider_name, name_length);
 
     if (memcmp(module, "GRANEXT\0", 8) != 0 ||
         get_u16(module + GRANITE_WIRE_H_HEADER_SIZE) != GRANITE_WIRE_HEADER_SIZE ||

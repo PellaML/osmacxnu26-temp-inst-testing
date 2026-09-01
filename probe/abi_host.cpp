@@ -37,7 +37,7 @@ int main(int argc, char **argv) {
         module.abi_major != GRANITE_EXT_NATIVE_ABI_MAJOR ||
         module.abi_minor != GRANITE_EXT_NATIVE_ABI_MINOR ||
         module.invoke == nullptr || module.stop == nullptr ||
-        module.manifest.len != 9 || module.manifest.ptr == nullptr)
+        !granite_bytes_valid(module.manifest) || module.manifest.len != 9)
         return 3;
 
     const uint8_t request_data[] = {'p','i','n','g'};

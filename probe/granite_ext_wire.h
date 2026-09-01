@@ -12,6 +12,8 @@
 #define GRANITE_EXT_WIRE_H
 
 #include <limits.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -85,53 +87,112 @@
 #define GRANITE_WIRE_R_FLAGS 60u
 #define GRANITE_WIRE_R_RESERVED_TAIL 68u
 
-static inline void granite_wire_put_u16(uint8_t *at, uint16_t value) {
+/* A caller-owned output buffer. `data` must designate `capacity` writable bytes. */
+typedef struct granite_wire_mut {
+    uint8_t *data;
+    size_t capacity;
+} granite_wire_mut;
+
+static inline granite_wire_mut granite_wire_buffer(void *data, size_t capacity) {
+    granite_wire_mut out = {(uint8_t *)data, capacity};
+    return out;
+}
+
+static inline bool granite_wire_span(granite_wire_mut out, uint32_t offset,
+    size_t width, uint8_t **span) {
+    size_t start = (size_t)offset;
+    if (span == NULL) return false;
+    *span = NULL;
+    if (out.data == NULL || start > out.capacity || width > out.capacity - start)
+        return false;
+    *span = out.data + start;
+    return true;
+}
+
+static inline bool granite_wire_put_u16(granite_wire_mut out, uint32_t offset,
+    uint16_t value) {
+    uint8_t *at;
+    if (!granite_wire_span(out, offset, 2, &at)) return false;
     at[0] = (uint8_t)value;
     at[1] = (uint8_t)(value >> 8);
+    return true;
 }
-static inline void granite_wire_put_u32(uint8_t *at, uint32_t value) {
+static inline bool granite_wire_put_u32(granite_wire_mut out, uint32_t offset,
+    uint32_t value) {
+    uint8_t *at;
+    if (!granite_wire_span(out, offset, 4, &at)) return false;
     at[0] = (uint8_t)value;
     at[1] = (uint8_t)(value >> 8);
     at[2] = (uint8_t)(value >> 16);
     at[3] = (uint8_t)(value >> 24);
+    return true;
 }
-static inline void granite_wire_put_i32(uint8_t *at, int32_t value) {
-    granite_wire_put_u32(at, (uint32_t)value);
+static inline bool granite_wire_put_i32(granite_wire_mut out, uint32_t offset,
+    int32_t value) {
+    return granite_wire_put_u32(out, offset, (uint32_t)value);
 }
-static inline void granite_wire_put_u64(uint8_t *at, uint64_t value) {
-    granite_wire_put_u32(at, (uint32_t)value);
-    granite_wire_put_u32(at + 4, (uint32_t)(value >> 32));
+static inline bool granite_wire_put_u64(granite_wire_mut out, uint32_t offset,
+    uint64_t value) {
+    uint8_t *at;
+    if (!granite_wire_span(out, offset, 8, &at)) return false;
+    at[0] = (uint8_t)value;
+    at[1] = (uint8_t)(value >> 8);
+    at[2] = (uint8_t)(value >> 16);
+    at[3] = (uint8_t)(value >> 24);
+    at[4] = (uint8_t)(value >> 32);
+    at[5] = (uint8_t)(value >> 40);
+    at[6] = (uint8_t)(value >> 48);
+    at[7] = (uint8_t)(value >> 56);
+    return true;
 }
-static inline void granite_wire_put_ref(uint8_t *at, uint32_t offset,
-    uint32_t length) {
-    granite_wire_put_u32(at, offset);
-    granite_wire_put_u32(at + 4, length);
+static inline bool granite_wire_put_ref(granite_wire_mut out, uint32_t offset,
+    uint32_t target, uint32_t length) {
+    uint8_t *at;
+    if (!granite_wire_span(out, offset, 8, &at)) return false;
+    at[0] = (uint8_t)target;
+    at[1] = (uint8_t)(target >> 8);
+    at[2] = (uint8_t)(target >> 16);
+    at[3] = (uint8_t)(target >> 24);
+    at[4] = (uint8_t)length;
+    at[5] = (uint8_t)(length >> 8);
+    at[6] = (uint8_t)(length >> 16);
+    at[7] = (uint8_t)(length >> 24);
+    return true;
 }
 
-static inline void granite_wire_init_header(uint8_t out[GRANITE_WIRE_HEADER_SIZE]) {
+static inline bool granite_wire_init_header(granite_wire_mut out) {
     static const uint8_t magic[8] = {'G','R','A','N','E','X','T',0};
-    memset(out, 0, GRANITE_WIRE_HEADER_SIZE);
-    memcpy(out + GRANITE_WIRE_H_MAGIC, magic, sizeof(magic));
-    granite_wire_put_u16(out + GRANITE_WIRE_H_HEADER_SIZE, GRANITE_WIRE_HEADER_SIZE);
-    granite_wire_put_u16(out + GRANITE_WIRE_H_ABI_MAJOR, GRANITE_WIRE_ABI_MAJOR);
-    granite_wire_put_u16(out + GRANITE_WIRE_H_ABI_MINOR, GRANITE_WIRE_ABI_MINOR);
-    out[GRANITE_WIRE_H_ENDIAN] = GRANITE_WIRE_ENDIAN_LITTLE;
-    granite_wire_put_u16(out + GRANITE_WIRE_H_PROVIDER_STRIDE,
-        GRANITE_WIRE_PROVIDER_SIZE);
-    granite_wire_put_u16(out + GRANITE_WIRE_H_REGISTRATION_STRIDE,
-        GRANITE_WIRE_REGISTRATION_SIZE);
+    uint8_t *header;
+    if (!granite_wire_span(out, 0, GRANITE_WIRE_HEADER_SIZE, &header)) return false;
+    memset(header, 0, GRANITE_WIRE_HEADER_SIZE);
+    memcpy(header + GRANITE_WIRE_H_MAGIC, magic, sizeof(magic));
+    header[GRANITE_WIRE_H_ENDIAN] = GRANITE_WIRE_ENDIAN_LITTLE;
+    return granite_wire_put_u16(out, GRANITE_WIRE_H_HEADER_SIZE,
+               GRANITE_WIRE_HEADER_SIZE) &&
+        granite_wire_put_u16(out, GRANITE_WIRE_H_ABI_MAJOR,
+               GRANITE_WIRE_ABI_MAJOR) &&
+        granite_wire_put_u16(out, GRANITE_WIRE_H_ABI_MINOR,
+               GRANITE_WIRE_ABI_MINOR) &&
+        granite_wire_put_u16(out, GRANITE_WIRE_H_PROVIDER_STRIDE,
+               GRANITE_WIRE_PROVIDER_SIZE) &&
+        granite_wire_put_u16(out, GRANITE_WIRE_H_REGISTRATION_STRIDE,
+               GRANITE_WIRE_REGISTRATION_SIZE);
 }
-static inline void granite_wire_init_provider(
-    uint8_t out[GRANITE_WIRE_PROVIDER_SIZE]) {
-    memset(out, 0, GRANITE_WIRE_PROVIDER_SIZE);
-    granite_wire_put_u16(out + GRANITE_WIRE_P_RECORD_SIZE,
-        GRANITE_WIRE_PROVIDER_SIZE);
+static inline bool granite_wire_init_provider(granite_wire_mut out,
+    uint32_t offset) {
+    uint8_t *record;
+    if (!granite_wire_span(out, offset, GRANITE_WIRE_PROVIDER_SIZE, &record))
+        return false;
+    memset(record, 0, GRANITE_WIRE_PROVIDER_SIZE);
+    return granite_wire_put_u16(out, offset, GRANITE_WIRE_PROVIDER_SIZE);
 }
-static inline void granite_wire_init_registration(
-    uint8_t out[GRANITE_WIRE_REGISTRATION_SIZE]) {
-    memset(out, 0, GRANITE_WIRE_REGISTRATION_SIZE);
-    granite_wire_put_u16(out + GRANITE_WIRE_R_RECORD_SIZE,
-        GRANITE_WIRE_REGISTRATION_SIZE);
+static inline bool granite_wire_init_registration(granite_wire_mut out,
+    uint32_t offset) {
+    uint8_t *record;
+    if (!granite_wire_span(out, offset, GRANITE_WIRE_REGISTRATION_SIZE, &record))
+        return false;
+    memset(record, 0, GRANITE_WIRE_REGISTRATION_SIZE);
+    return granite_wire_put_u16(out, offset, GRANITE_WIRE_REGISTRATION_SIZE);
 }
 
 /*
