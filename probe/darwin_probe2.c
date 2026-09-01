@@ -62,80 +62,101 @@ static const char *prot_str(vm_prot_t p, char *buf) {
     return buf;
 }
 
+// Descend through nested submaps to the entry that actually describes pages.
+// At depth 0 the commpage reports as a 1 GB region with `---` protections: that
+// is the submap's own entry and says nothing about what is inside it.
+static kern_return_t region_at(mach_vm_address_t *addr, mach_vm_size_t *size,
+                               vm_region_submap_info_data_64_t *info, natural_t *out_depth) {
+    natural_t depth = 0;
+    kern_return_t kr;
+    for (;;) {
+        mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+        kr = mach_vm_region_recurse(mach_task_self(), addr, size, &depth,
+                                    (vm_region_recurse_info_t)info, &count);
+        if (kr != KERN_SUCCESS) break;
+        if (!info->is_submap || depth > 8) break;
+        depth++;
+    }
+    *out_depth = depth;
+    return kr;
+}
+
 static void dump_vm_layout(void) {
     printf("\n===== 2. COMMPAGE VM LAYOUT =====\n");
     printf("  page size: %d\n", getpagesize());
 
-    // Walk from a little below the commpage base to well past it, so the
-    // separate read-only and text pages show up wherever they landed.
-    mach_vm_address_t addr = COMMPAGE_BASE - 0x10000;
-    for (int i = 0; i < 24; i++) {
+    mach_vm_address_t addr = COMMPAGE_BASE - 0x100000;
+    for (int i = 0; i < 32; i++) {
         mach_vm_size_t size = 0;
         vm_region_submap_info_data_64_t info;
-        mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
         natural_t depth = 0;
-        kern_return_t kr = mach_vm_region_recurse(mach_task_self(), &addr, &size,
-                                                  &depth, (vm_region_recurse_info_t)&info,
-                                                  &count);
+        kern_return_t kr = region_at(&addr, &size, &info, &depth);
         if (kr != KERN_SUCCESS) { printf("  (end of map at 0x%llx: %d)\n", addr, kr); break; }
         char cur[4], max[4];
-        printf("  0x%016llx - 0x%016llx  %6llu KB  cur=%s max=%s  tag=%u depth=%u%s\n",
+        printf("  0x%016llx - 0x%016llx  %8llu KB  cur=%s max=%s  tag=%2u depth=%u sub=%d%s\n",
                (unsigned long long)addr, (unsigned long long)(addr + size),
                (unsigned long long)(size / 1024),
                prot_str(info.protection, cur), prot_str(info.max_protection, max),
-               info.user_tag, depth,
+               info.user_tag, depth, (int)info.is_submap,
                (addr <= COMMPAGE_BASE && COMMPAGE_BASE < addr + size) ? "   <== commpage data" : "");
         addr += size;
         if (addr > COMMPAGE_BASE + 0x100000) break;
     }
 }
 
-// Try to locate the commpage TEXT page, whose address is randomized per boot and
-// delivered in apple[]. Confirm it is executable and read its two routines.
+// The commpage TEXT page (the PFZ, preemption-free zone). Its user VA is
+// randomized per boot and handed to the process as apple[1] = "pfz=0x...".
+// libplatform's __pfz_setup() reads it before main() and does
+// bzero(p - 4, strlen(p) + 4) -- backing up exactly strlen("pfz=") so the key
+// goes too. It is therefore always empty by the time we can look. kern.pfz is
+// the authoritative read; it is CTLFLAG_MASKED so `sysctl -a` never lists it,
+// but sysctlbyname works.
 static void dump_commpage_text(char **apple) {
-    printf("\n===== 3. COMMPAGE TEXT PAGE (randomized per boot) =====\n");
-    unsigned long long va = 0;
-    for (int i = 0; apple && apple[i]; i++) {
-        const char *k = "cpu_capabilities64=";           // not it, but keep scanning
-        (void)k;
-        if (strncmp(apple[i], "com.apple.commpage.text=", 24) == 0) {
-            va = strtoull(apple[i] + 24, NULL, 0);
-        }
-    }
-    if (!va) {
-        printf("  no explicit apple[] key matched; scanning for a hex-looking value\n");
-        for (int i = 0; apple && apple[i]; i++) {
-            const char *eq = strchr(apple[i], '=');
-            if (!eq) continue;
-            if (strncmp(eq + 1, "0x", 2) != 0) continue;
-            unsigned long long v = strtoull(eq + 1, NULL, 16);
-            if (v > 0x0000000F00000000ULL && v < 0x0000001000000000ULL) {
-                printf("  candidate from %.*s : 0x%llx\n", (int)(eq - apple[i]), apple[i], v);
-                if (!va) va = v;
-            }
-        }
-    }
-    if (!va) { printf("  not found in apple[]\n"); return; }
+    printf("\n===== 3. COMMPAGE TEXT PAGE / PFZ (randomized per boot) =====\n");
 
-    printf("  text page VA = 0x%llx\n", va);
-    mach_vm_address_t a = (mach_vm_address_t)va;
+    for (int i = 0; apple && apple[i]; i++) {
+        if (strncmp(apple[i], "pfz", 3) == 0) {
+            printf("  apple[%d] still carries a pfz key: \"%s\"\n", i, apple[i]);
+        }
+    }
+    printf("  apple[1] = \"%s\"  (empty => libplatform scrubbed it, as expected)\n",
+           (apple && apple[0] && apple[1]) ? apple[1] : "<none>");
+
+    uint64_t pfz = 0;
+    size_t len = sizeof pfz;
+    if (sysctlbyname("kern.pfz", &pfz, &len, NULL, 0) != 0) {
+        printf("  kern.pfz -> <error>\n");
+        return;
+    }
+    printf("  kern.pfz = 0x%llx   [%zu bytes returned]\n", (unsigned long long)pfz, len);
+    if (!pfz) { printf("  (zero: no PFZ mapped)\n"); return; }
+    printf("  commpage data base - pfz = 0x%llx\n",
+           (unsigned long long)(COMMPAGE_BASE - pfz));
+
+    mach_vm_address_t a = (mach_vm_address_t)pfz;
     mach_vm_size_t size = 0;
     vm_region_submap_info_data_64_t info;
-    mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
     natural_t depth = 0;
-    if (mach_vm_region_recurse(mach_task_self(), &a, &size, &depth,
-                               (vm_region_recurse_info_t)&info, &count) == KERN_SUCCESS) {
+    if (region_at(&a, &size, &info, &depth) == KERN_SUCCESS) {
         char cur[4], max[4];
-        printf("  region 0x%llx + %llu, cur=%s max=%s\n", (unsigned long long)a,
-               (unsigned long long)size, prot_str(info.protection, cur),
-               prot_str(info.max_protection, max));
+        printf("  region 0x%llx + %llu  cur=%s max=%s depth=%u\n",
+               (unsigned long long)a, (unsigned long long)size,
+               prot_str(info.protection, cur), prot_str(info.max_protection, max), depth);
     }
-    const uint32_t *insn = (const uint32_t *)(uintptr_t)va;
+
+    const uint32_t *insn = (const uint32_t *)(uintptr_t)pfz;
     printf("  +0x0 (ATOMIC_ENQUEUE) = 0x%08x\n", insn[0]);
     printf("  +0x4 (ATOMIC_DEQUEUE) = 0x%08x\n", insn[1]);
-    printf("  first 8 words:");
-    for (int i = 0; i < 8; i++) printf(" %08x", insn[i]);
+    printf("  first 16 words:");
+    for (int i = 0; i < 16; i++) printf(" %08x", insn[i]);
     printf("\n");
+    // XNU pads the rest of the page with BRK_666_OPCODE; find where code stops.
+    int words = getpagesize() / 4;
+    uint32_t filler = insn[words - 1];
+    int last = 0;
+    for (int i = 0; i < words; i++) if (insn[i] != filler) last = i;
+    printf("  filler word = 0x%08x, last non-filler index %d => %d bytes of code\n",
+           filler, last, (last + 1) * 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +255,11 @@ static void sysctl_show(const char *name) {
     char buf[512];
     size_t len = sizeof buf;
     if (sysctlbyname(name, buf, &len, NULL, 0) != 0) { printf("  %-34s <error>\n", name); return; }
-    if (len <= 8) {
+    int printable = len > 1 && buf[len - 1] == 0;
+    for (size_t i = 0; printable && i + 1 < len; i++) {
+        if (buf[i] < 32 || buf[i] > 126) printable = 0;
+    }
+    if (!printable && len <= 8) {
         uint64_t v = 0; memcpy(&v, buf, len);
         printf("  %-34s = %llu (0x%llx)  [%zu bytes]\n", name, v, v, len);
     } else {
@@ -255,6 +280,9 @@ static void probe_more_sysctls(void) {
         "kern.ipc_portbt", "kern.num_taskthreads",
         "vm.pagesize", "vm.compressor_mode",
         "machdep.virtual_address_size",
+        "kern.pfz", "kern.slide", "kern.bootsessionuuid", "kern.osbuildconfig",
+        "kern.dyld_system_order", "vm.shared_region_pager_count",
+        "sysctl.proc_native", "sysctl.proc_translated",
     };
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) sysctl_show(names[i]);
 }
