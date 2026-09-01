@@ -41,17 +41,31 @@ jobs:
       - name: Run probe
         run: ./darwin_probe
 
+      - name: Build probe round 2
+        run: |
+          clang -O0 -g -arch arm64 -o darwin_probe2 probe/darwin_probe2.c \
+            -framework IOKit -framework CoreFoundation
+          file darwin_probe2
+
+      - name: Run probe round 2
+        run: ./darwin_probe2
+
       - name: Broad hw.* sysctl dump
         run: sysctl -a 2>/dev/null | grep -E '^hw\.' | sort
 
       - name: Broad hw.optional.* dump
         run: sysctl -a 2>/dev/null | grep -E '^hw\.optional' | sort
 
+      - name: Full sysctl dump
+        run: sysctl -a 2>/dev/null | sort
+
       - name: Save output
         if: always()
         run: |
           mkdir -p out
-          ./darwin_probe > "out/probe-${{ matrix.runner }}.txt" 2>&1 || true
+          ./darwin_probe  > "out/probe-${{ matrix.runner }}.txt"  2>&1 || true
+          ./darwin_probe2 > "out/probe2-${{ matrix.runner }}.txt" 2>&1 || true
+          sysctl -a 2>/dev/null | sort > "out/sysctl-all-${{ matrix.runner }}.txt"
           sysctl -a 2>/dev/null | grep -E '^hw\.' | sort > "out/sysctl-hw-${{ matrix.runner }}.txt"
 
       - uses: actions/upload-artifact@v4
