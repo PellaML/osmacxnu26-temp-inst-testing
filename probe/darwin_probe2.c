@@ -256,7 +256,8 @@ static void probe_shared_cache(void) {
     size_t len = 0;
     const void *base = _dyld_get_shared_cache_range(&len);
     if (!base) { printf("  no shared cache in this process\n"); return; }
-    printf("  range: %p .. %p  (%zu bytes, %.2f GB)\n", base, (const char *)base + len, len,
+    printf("  range: %p .. %p  (%zu bytes, %.2f GB)\n", base,
+           (const void *)((const char *)base + len), len,
            (double)len / (1024.0 * 1024.0 * 1024.0));
 
     uuid_t u;

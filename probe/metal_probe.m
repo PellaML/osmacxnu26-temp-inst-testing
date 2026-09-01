@@ -173,8 +173,10 @@ static void exercise_metal(id<MTLDevice> device) {
     id<MTLComputeCommandEncoder> encoder = [commands computeCommandEncoder];
     [encoder setComputePipelineState:pipeline];
     [encoder setBuffer:buffer offset:0 atIndex:0];
+    NSUInteger group_width = pipeline.maxTotalThreadsPerThreadgroup < 64
+        ? pipeline.maxTotalThreadsPerThreadgroup : 64;
     [encoder dispatchThreads:MTLSizeMake(64, 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)64, pipeline.maxTotalThreadsPerThreadgroup), 1, 1)];
+        threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
     [encoder endEncoding];
     [commands commit];
     [commands waitUntilCompleted];

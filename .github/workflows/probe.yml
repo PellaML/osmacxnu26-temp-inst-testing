@@ -54,7 +54,7 @@ jobs:
             xcrun --show-sdk-version
             xcrun clang --version
           } | tee out/environment.txt
-          test "$(arch)" = "${{ matrix.arch }}"
+          test "$(uname -m)" = "${{ matrix.arch }}"
 
       - name: Build native probes
         shell: bash
